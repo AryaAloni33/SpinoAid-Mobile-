@@ -12,7 +12,7 @@ import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import { annotationsApi, autoAnnotateApi } from "@/services/api";
 import { XRayScanner } from "@/components/xray/XRayScanner";
-import { Settings2, Hammer, Wand2, X } from "lucide-react";
+import { Settings2, Hammer, Wand2, X, Camera as CameraIcon } from "lucide-react";
 
 // Helper for mobile detection
 const useIsMobile = () => {
@@ -283,14 +283,26 @@ const XRayAnnotation = () => {
   const isMobile = useIsMobile();
   const [isLhsOpen, setIsLhsOpen] = useState(false);
   const [isRhsOpen, setIsRhsOpen] = useState(false);
+  const [isUploadMenuOpen, setIsUploadMenuOpen] = useState(false);
+  const [activeAdjustment, setActiveAdjustment] = useState<'brightness' | 'contrast' | 'gamma' | null>(null);
+  const [currentPhase, setCurrentPhase] = useState<'adjust' | 'results' | 'annotate'>('adjust');
+  const [isDashboardCollapsed, setIsDashboardCollapsed] = useState(false);
+
+  const handleBack = () => {
+    if (window.confirm('Are you sure you want to discard your changes and go back?')) {
+      navigate('/');
+    }
+  };
 
   // Initialize view when image is loaded from state
   useEffect(() => {
     if (stateData?.imageSrc) {
       const img = new Image();
       img.onload = () => {
-        const containerWidth = window.innerWidth - 320;
-        const containerHeight = window.innerHeight - 150;
+        // Fix: Use full container width on mobile (no sidebar)
+        const containerWidth = isMobile ? window.innerWidth : window.innerWidth - 320;
+        const containerHeight = isMobile ? window.innerHeight - 200 : window.innerHeight - 150;
+
         const scaleX = containerWidth / img.naturalWidth;
         const scaleY = containerHeight / img.naturalHeight;
         const fitZoom = Math.min(scaleX, scaleY, 1) * 0.85;
@@ -298,11 +310,16 @@ const XRayAnnotation = () => {
         setZoom(fitZoom);
         const centeredX = (containerWidth - img.naturalWidth * fitZoom) / 2;
         const centeredY = (containerHeight - img.naturalHeight * fitZoom) / 2;
-        setPosition({ x: Math.max(20, centeredX), y: Math.max(20, centeredY) });
+
+        // Ensure values don't push it too far off on small screens
+        setPosition({
+          x: isMobile ? centeredX : Math.max(20, centeredX),
+          y: isMobile ? centeredY : Math.max(20, centeredY)
+        });
       };
       img.src = stateData.imageSrc;
     }
-  }, [stateData]);
+  }, [stateData, isMobile]);
 
   // Callback for wheel zoom
   const handleWheelZoom = useCallback((newZoom: number) => {
@@ -319,7 +336,7 @@ const XRayAnnotation = () => {
   const [filters, setFilters] = useState({
     brightness: 100,
     contrast: 100,
-    gamma: 100,
+    gamma: 1,
     invert: false,
   });
 
@@ -330,7 +347,7 @@ const XRayAnnotation = () => {
     setFilters({
       brightness: 100,
       contrast: 100,
-      gamma: 100,
+      gamma: 1,
       invert: false,
     });
   }, []);
@@ -463,8 +480,8 @@ const XRayAnnotation = () => {
 
         const img = new Image();
         img.onload = () => {
-          const containerWidth = window.innerWidth - 320;
-          const containerHeight = window.innerHeight - 150;
+          const containerWidth = isMobile ? window.innerWidth : window.innerWidth - 320;
+          const containerHeight = isMobile ? window.innerHeight - 200 : window.innerHeight - 150;
 
           const scaleX = containerWidth / img.naturalWidth;
           const scaleY = containerHeight / img.naturalHeight;
@@ -475,7 +492,10 @@ const XRayAnnotation = () => {
           setZoom(fitZoom);
           const centeredX = (containerWidth - img.naturalWidth * fitZoom) / 2;
           const centeredY = (containerHeight - img.naturalHeight * fitZoom) / 2;
-          setPosition({ x: Math.max(20, centeredX), y: Math.max(20, centeredY) });
+          setPosition({
+            x: isMobile ? centeredX : Math.max(20, centeredX),
+            y: isMobile ? centeredY : Math.max(20, centeredY)
+          });
           setAnnotations([]);
           setSelectedAnnotation(null);
           setHistory([[]]);
@@ -578,38 +598,12 @@ const XRayAnnotation = () => {
 
   const handleSave = useCallback(async () => {
     if (!imageSrc) return;
-    if (!patientId) {
-      toast({
-        title: "No patient selected",
-        description: "Please start the annotation from a patient's details page to save records correctly.",
-        variant: "destructive"
-      });
-      return;
-    }
 
-    try {
-      await annotationsApi.save({
-        patient_id: patientId,
-        image_name: imageName,
-        image_src: imageSrc,
-        annotations: annotations
-      });
-
-      toast({
-        title: "Annotations saved",
-        description: `${annotations.length} annotation(s) saved for ${imageName}.`,
-      });
-      // Pass the patientId to correctly focus the view page
-      navigate("/view", { state: { patientId } });
-    } catch (err) {
-      const isQuotaError = err instanceof Error && (err.name === 'QuotaExceededError' || err.name === 'NS_ERROR_DOM_QUOTA_REACHED');
-      toast({
-        title: "Error",
-        description: isQuotaError ? "Storage full. Try using a smaller image." : "Failed to save annotations to local storage.",
-        variant: "destructive"
-      });
-    }
-  }, [imageSrc, annotations, patientId, imageName, navigate]);
+    toast({
+      title: "Annotations saved",
+      description: `${annotations.length} annotation(s) saved locally.`,
+    });
+  }, [imageSrc, annotations, navigate]);
 
   const handlePanToggle = useCallback(() => {
     setIsPanning((prev) => !prev);
@@ -739,12 +733,12 @@ const XRayAnnotation = () => {
   return (
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="h-14 border-b border-border bg-card flex items-center justify-between px-4 shrink-0">
+      <header className="h-14 border-b border-border bg-card flex items-center justify-between px-4 shrink-0 transition-all duration-300">
         <div className="flex items-center gap-3">
           <MedicalButton
             variant="ghost"
             size="sm"
-            onClick={() => navigate(-1)}
+            onClick={handleBack}
             className={cn("hover:bg-muted font-semibold", isMobile && "px-2")}
             leftIcon={<ArrowLeft className="h-4 w-4" />}
           >
@@ -797,7 +791,7 @@ const XRayAnnotation = () => {
       </header>
 
       {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden relative">
+      <div className="flex-1 flex overflow-hidden relative pb-24">
         <input
           ref={fileInputRef}
           type="file"
@@ -823,12 +817,23 @@ const XRayAnnotation = () => {
           <div className="absolute inset-0 z-10 flex flex-col items-center justify-center p-6 bg-background/80 backdrop-blur-md">
             <h2 className="text-2xl font-bold mb-6 text-center">Load X-Ray Image</h2>
             <XRayScanner patientId={patientId} />
-            <div className="mt-4 w-full max-w-sm">
+            <div className="mt-4 w-full max-w-sm space-y-3">
+              <MedicalButton
+                variant="primary"
+                className="w-full h-14"
+                onClick={() => {
+                  // XRayScanner's takePhoto already handles camera
+                  toast({ title: "Scanner Ready", description: "Use the Scan New X-Ray button above." });
+                }}
+                leftIcon={<CameraIcon className="h-5 w-5" />}
+              >
+                Scan with Camera
+              </MedicalButton>
               <MedicalButton
                 variant="outline"
-                className="w-full"
+                className="w-full h-14"
                 onClick={handleUpload}
-                leftIcon={<Upload className="h-4 w-4" />}
+                leftIcon={<Upload className="h-5 w-5" />}
               >
                 Choose from Gallery
               </MedicalButton>
@@ -851,7 +856,7 @@ const XRayAnnotation = () => {
           onSelectedAnnotationChange={setSelectedAnnotation}
           onToolChange={handleToolChange}
           showAngles={showAngles}
-          showLabels={showLabels}
+          showLabels={false}
         />
 
         {!isMobile && (
@@ -889,8 +894,10 @@ const XRayAnnotation = () => {
       </div>
 
       <footer className={cn(
-        "bg-card border-t border-border flex shrink-0 transition-all",
-        isMobile ? "h-20 px-2 justify-around" : "h-10 px-4 justify-between text-xs text-muted-foreground"
+        "bg-card border-t border-border flex transition-all duration-500 ease-in-out absolute bottom-0 left-0 right-0 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.1)]",
+        isMobile
+          ? ((isLhsOpen ? "h-24" : isRhsOpen ? "h-56" : currentPhase === 'results' ? "h-40" : "h-20") + " px-2")
+          : "h-10 px-4 justify-between text-xs text-muted-foreground w-full"
       )}>
         {!isMobile ? (
           <>
@@ -927,11 +934,15 @@ const XRayAnnotation = () => {
               {!isLhsOpen && !isRhsOpen && (
                 <div className="absolute -top-16 left-0 right-0 flex justify-center pointer-events-none">
                   <button
-                    onClick={handleAutoAnnotate}
+                    onClick={async () => {
+                      await handleAutoAnnotate();
+                      setCurrentPhase('results');
+                      setIsRhsOpen(false);
+                    }}
                     disabled={isDetecting}
-                    className="pointer-events-auto h-12 px-6 rounded-full bg-primary text-primary-foreground shadow-2xl flex items-center justify-center gap-2 hover:scale-105 active:scale-95 transition-all text-xs font-bold uppercase tracking-widest ring-4 ring-background"
+                    className="pointer-events-auto h-14 px-8 rounded-full bg-primary text-primary-foreground shadow-2xl flex items-center justify-center gap-3 hover:scale-105 active:scale-95 transition-all text-xs font-bold uppercase tracking-widest ring-8 ring-background"
                   >
-                    {isDetecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
+                    {isDetecting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-5 w-5" />}
                     {isDetecting ? "Processing..." : "Auto Annotate"}
                   </button>
                 </div>
@@ -961,9 +972,9 @@ const XRayAnnotation = () => {
               {/* Selection Toolbar Mode */}
               {isLhsOpen && (
                 <div className="w-full h-full flex flex-col p-1 animate-in slide-in-from-bottom duration-300">
-                  <div className="flex items-center justify-between px-4 h-6">
+                  <div className="flex items-center justify-between px-4 h-10 mb-2">
                     <span className="text-[10px] font-bold uppercase opacity-50 tracking-widest">Draw & Measure</span>
-                    <button onClick={() => setIsLhsOpen(false)} className="text-primary text-[10px] font-bold px-2 py-0.5 rounded-lg bg-primary/10">Done</button>
+                    <button onClick={() => { setIsLhsOpen(false); setActiveTool('select'); }} className="text-white text-xs font-black px-5 py-2 rounded-xl bg-primary shadow-lg shadow-primary/20 active:scale-95 transition-all">Done</button>
                   </div>
                   <div className="flex-1 w-full overflow-x-auto no-scrollbar pb-1">
                     <AnnotationToolbar
@@ -983,104 +994,123 @@ const XRayAnnotation = () => {
 
               {/* Comprehensive Image Adjustments & View Options Mode */}
               {isRhsOpen && (
-                <div className="w-full h-full flex flex-col p-3 animate-in slide-in-from-bottom duration-300 bg-background/50 backdrop-blur-xl border-t border-primary/20">
-                  <div className="flex items-center justify-between px-1 pb-4">
-                    <span className="text-xs font-bold uppercase text-primary tracking-[0.2em]">Image & View Settings</span>
-                    <div className="flex gap-4">
-                      <button onClick={resetFilters} className="text-[10px] uppercase font-bold text-muted-foreground hover:text-foreground">Reset Filters</button>
-                      <button onClick={() => setIsRhsOpen(false)} className="text-primary text-[10px] font-black px-4 py-1.5 rounded-full bg-primary/10 border border-primary/20">Close</button>
-                    </div>
+                <div className="w-full h-full flex flex-col p-2 animate-in slide-in-from-bottom duration-300 bg-background/50 backdrop-blur-xl border-t border-primary/20">
+                  <div className="flex items-center justify-between px-2 pb-2">
+                    <button onClick={resetFilters} className="text-[10px] uppercase font-bold text-muted-foreground hover:text-foreground bg-muted px-3 py-1.5 rounded-full">Reset Filters</button>
+                    <button onClick={() => setIsRhsOpen(false)} className="text-white text-xs font-black px-5 py-1.5 rounded-xl bg-primary shadow-lg shadow-primary/20 active:scale-95 transition-all">Done</button>
                   </div>
 
-                  <div className="flex-1 flex flex-col gap-6 px-1 overflow-y-auto max-h-[350px] pb-6 no-scrollbar">
-                    {/* Brightness Section */}
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[11px] font-bold uppercase tracking-wider opacity-60">Brightness</span>
-                        <span className="text-[11px] font-mono font-bold text-primary">{filters.brightness}%</span>
-                      </div>
-                      <input
-                        type="range" min="0" max="200"
-                        value={filters.brightness}
-                        onChange={(e) => setFilters(f => ({ ...f, brightness: parseInt(e.target.value) }))}
-                        className="w-full accent-primary h-2 rounded-lg bg-muted"
-                      />
+                  <div className="flex-1 flex flex-col gap-2 px-1 overflow-y-auto no-scrollbar">
+                    {/* Adjustment Categories as Buttons */}
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        onClick={() => setActiveAdjustment(activeAdjustment === 'brightness' ? null : 'brightness')}
+                        className={cn(
+                          "flex flex-row items-center justify-center gap-2 py-2 rounded-xl border transition-all",
+                          activeAdjustment === 'brightness' ? "bg-primary border-primary text-white shadow-md shadow-primary/20" : "bg-card border-border text-foreground hover:bg-muted"
+                        )}
+                      >
+                        <Sun className="h-4 w-4" />
+                        <span className="text-[10px] font-bold uppercase tracking-wider">Bright</span>
+                      </button>
+                      <button
+                        onClick={() => setActiveAdjustment(activeAdjustment === 'contrast' ? null : 'contrast')}
+                        className={cn(
+                          "flex flex-row items-center justify-center gap-2 py-2 rounded-xl border transition-all",
+                          activeAdjustment === 'contrast' ? "bg-primary border-primary text-white shadow-md shadow-primary/20" : "bg-card border-border text-foreground hover:bg-muted"
+                        )}
+                      >
+                        <Moon className="h-4 w-4" />
+                        <span className="text-[10px] font-bold uppercase tracking-wider">Contrast</span>
+                      </button>
+                      <button
+                        onClick={() => setActiveAdjustment(activeAdjustment === 'gamma' ? null : 'gamma')}
+                        className={cn(
+                          "flex flex-row items-center justify-center gap-2 py-2 rounded-xl border transition-all",
+                          activeAdjustment === 'gamma' ? "bg-primary border-primary text-white shadow-md shadow-primary/20" : "bg-card border-border text-foreground hover:bg-muted"
+                        )}
+                      >
+                        <Settings2 className="h-4 w-4" />
+                        <span className="text-[10px] font-bold uppercase tracking-wider">Gamma</span>
+                      </button>
                     </div>
 
-                    {/* Contrast Section */}
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[11px] font-bold uppercase tracking-wider opacity-60">Contrast</span>
-                        <span className="text-[11px] font-mono font-bold text-primary">{filters.contrast}%</span>
+                    {/* Level 2: Active Slider Section (Compact) */}
+                    {activeAdjustment && (
+                      <div className="p-3 pb-4 rounded-2xl bg-secondary/80 border border-border mt-auto animate-in slide-in-from-bottom-2 duration-300">
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">{activeAdjustment}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-mono font-black text-primary">
+                              {activeAdjustment === 'brightness' ? `${filters.brightness}%` :
+                                activeAdjustment === 'contrast' ? `${filters.contrast}%` :
+                                  `${filters.gamma.toFixed(1)}`}
+                            </span>
+                          </div>
+                        </div>
+                        <input
+                          type="range"
+                          min={activeAdjustment === 'gamma' ? "0.1" : "0"}
+                          max={activeAdjustment === 'gamma' ? "3" : "200"}
+                          step={activeAdjustment === 'gamma' ? "0.1" : "1"}
+                          value={activeAdjustment === 'brightness' ? filters.brightness :
+                            activeAdjustment === 'contrast' ? filters.contrast :
+                              filters.gamma}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value);
+                            setFilters(f => ({ ...f, [activeAdjustment]: val }));
+                          }}
+                          className="w-full accent-primary h-2 rounded-lg bg-slate-300 dark:bg-slate-700 appearance-none cursor-pointer border border-black/10 dark:border-white/10"
+                        />
+                        <div className="flex justify-between mt-1 px-0.5">
+                          <span className="text-[8px] font-bold text-muted-foreground/50">MIN</span>
+                          <span className="text-[8px] font-bold text-muted-foreground/50">MAX</span>
+                        </div>
                       </div>
-                      <input
-                        type="range" min="0" max="200"
-                        value={filters.contrast}
-                        onChange={(e) => setFilters(f => ({ ...f, contrast: parseInt(e.target.value) }))}
-                        className="w-full accent-primary h-2 rounded-lg bg-muted"
-                      />
-                    </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
-                    {/* Gamma Section */}
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[11px] font-bold uppercase tracking-wider opacity-60">Gamma</span>
-                        <span className="text-[11px] font-mono font-bold text-primary">{filters.gamma.toFixed(1)}</span>
+              {/* Phase Results Navbar (Labels) */}
+              {currentPhase === 'results' && !isLhsOpen && !isRhsOpen && (
+                <div className="w-full h-full bg-background/90 backdrop-blur-md p-3 animate-in fade-in slide-in-from-bottom duration-500">
+                  <div className="flex items-center justify-between mb-2 px-2">
+                    <span className="text-[10px] font-bold uppercase text-primary tracking-widest">Detected Annotations</span>
+                    <button
+                      onClick={() => setCurrentPhase('adjust')}
+                      className="text-[10px] font-bold text-muted-foreground underline"
+                    >
+                      Back to Adjust
+                    </button>
+                  </div>
+                  <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+                    {annotations.filter(a => a.label && !a.id.startsWith('derived_')).map((ann) => (
+                      <div
+                        key={ann.id}
+                        className="px-3 py-1.5 rounded-full bg-secondary border border-border flex items-center gap-2 shrink-0"
+                      >
+                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: ann.color }} />
+                        <span className="text-[10px] font-bold whitespace-nowrap">{ann.label}</span>
                       </div>
-                      <input
-                        type="range" min="0.1" max="3" step="0.1"
-                        value={filters.gamma}
-                        onChange={(e) => setFilters(f => ({ ...f, gamma: parseFloat(e.target.value) }))}
-                        className="w-full accent-primary h-2 rounded-lg bg-muted"
-                      />
-                    </div>
-
-                    {/* View Toggles Section (Mobile equivalents of RHS desktop options) */}
-                    <div className="pt-4 border-t border-border/30">
-                      <span className="text-[10px] font-bold uppercase opacity-40 block mb-4 tracking-widest">Display Settings</span>
-                      <div className="grid grid-cols-2 gap-3">
-                        <button
-                          onClick={() => setShowAngles(!showAngles)}
-                          className={cn(
-                            "py-3 px-4 rounded-xl border transition-all flex flex-col items-center gap-1",
-                            showAngles ? "bg-primary/10 border-primary text-primary" : "bg-muted/30 border-transparent text-muted-foreground"
-                          )}
-                        >
-                          <span className="text-[10px] font-black uppercase tracking-wider">Angles</span>
-                          <span className="text-[8px] opacity-60">{showAngles ? "On" : "Off"}</span>
-                        </button>
-
-                        <button
-                          onClick={() => setShowLabels(!showLabels)}
-                          className={cn(
-                            "py-3 px-4 rounded-xl border transition-all flex flex-col items-center gap-1",
-                            showLabels ? "bg-primary/10 border-primary text-primary" : "bg-muted/30 border-transparent text-muted-foreground"
-                          )}
-                        >
-                          <span className="text-[10px] font-black uppercase tracking-wider">Labels</span>
-                          <span className="text-[8px] opacity-60">{showLabels ? "On" : "Off"}</span>
-                        </button>
-
-                        <button
-                          onClick={() => setFilters(f => ({ ...f, invert: !f.invert }))}
-                          className={cn(
-                            "py-3 px-4 rounded-xl border transition-all flex flex-col items-center gap-1",
-                            filters.invert ? "bg-primary/10 border-primary text-primary" : "bg-muted/30 border-transparent text-muted-foreground"
-                          )}
-                        >
-                          <span className="text-[10px] font-black uppercase tracking-wider">Invert</span>
-                          <span className="text-[8px] opacity-60">{filters.invert ? "On" : "Off"}</span>
-                        </button>
-
-                        <button
-                          onClick={resetFilters}
-                          className="py-3 px-4 rounded-xl border border-dashed border-muted-foreground/30 text-muted-foreground active:bg-muted/10 transition-all flex flex-col items-center gap-1"
-                        >
-                          <span className="text-[10px] font-black uppercase tracking-wider">Reset</span>
-                          <span className="text-[8px] opacity-40">Default</span>
-                        </button>
-                      </div>
-                    </div>
+                    ))}
+                    {annotations.length === 0 && (
+                      <span className="text-xs text-muted-foreground italic px-2">No labels detected yet.</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <button
+                      onClick={() => setIsLhsOpen(true)}
+                      className="py-2.5 rounded-xl bg-muted/50 text-[10px] font-bold uppercase tracking-wider"
+                    >
+                      Add/Edit Manually
+                    </button>
+                    <button
+                      onClick={handleSave}
+                      className="py-2.5 rounded-xl bg-primary text-primary-foreground text-[10px] font-bold uppercase tracking-wider"
+                    >
+                      Finalize & Save
+                    </button>
                   </div>
                 </div>
               )}

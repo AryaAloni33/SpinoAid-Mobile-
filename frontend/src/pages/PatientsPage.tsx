@@ -41,6 +41,18 @@ export default function PatientsPage() {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
 
+  // Load images for active patient
+  useEffect(() => {
+    if (activePatient) {
+      setUploadedImages([]);
+      patientsApi.getImages(activePatient.patient_id).then(res => {
+        setUploadedImages(res.data.images);
+      });
+    } else {
+      setUploadedImages([]);
+    }
+  }, [activePatient]);
+
   useEffect(() => {
     const handleClickOutside = () => setMenuOpenId(null);
     if (menuOpenId) {
@@ -149,18 +161,20 @@ export default function PatientsPage() {
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files) return;
+    if (!files || !activePatient) return;
 
     Array.from(files).forEach((file) => {
       const reader = new FileReader();
-      reader.onloadend = () => {
-        setUploadedImages((prev) => [...prev, reader.result as string]);
+      reader.onloadend = async () => {
+        const src = reader.result as string;
+        setUploadedImages((prev) => [...prev, src]);
+        await patientsApi.addImage(activePatient.patient_id, src);
       };
       reader.readAsDataURL(file);
     });
     toast({
       title: "Upload Success",
-      description: `${files.length} images added to session`,
+      description: `${files.length} images added to patient record`,
     });
   };
 
@@ -225,9 +239,12 @@ export default function PatientsPage() {
 
   return (
     <div className="min-h-screen bg-background text-foreground font-sans selection:bg-primary/30">
-      <main className="flex h-screen overflow-hidden">
+      <main className="flex flex-col md:flex-row h-screen overflow-hidden">
         {/* Left Side - Patient List Area */}
-        <div className="w-[45%] flex flex-col border-r border-border bg-card/50">
+        <div className={cn(
+          "w-full md:w-[45%] flex flex-col border-r border-border bg-card/50",
+          activePatient && "hidden md:flex"
+        )}>
           {/* List Toolbar */}
           <div className="p-3 border-b border-border flex items-center gap-2">
             <button
@@ -398,7 +415,10 @@ export default function PatientsPage() {
         </div>
 
         {/* Right Side - Preview & Secondary Sidebar */}
-        <div className="flex-1 flex flex-col bg-card">
+        <div className={cn(
+          "flex-1 flex flex-col bg-card overflow-hidden",
+          !activePatient && "hidden md:flex"
+        )}>
           {activePatient ? (
             <>
               {/* Preview Header */}
@@ -426,7 +446,11 @@ export default function PatientsPage() {
                   <button className="p-2 text-muted-foreground hover:text-destructive transition-colors">
                     <Trash2
                       className="h-5 w-5"
-                      onClick={() => handleDelete(activePatient.patient_id)}
+                      onClick={async () => {
+                        if (confirm(`Delete record for ${activePatient.name}?`)) {
+                          await handleDelete(activePatient.patient_id);
+                        }
+                      }}
                     />
                   </button>
                   <button
@@ -435,7 +459,26 @@ export default function PatientsPage() {
                   >
                     <Upload className="h-3.5 w-3.5" /> SEND TO PACS
                   </button>
-                  <button className="flex items-center gap-2 px-5 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-[11px] font-black rounded shadow-xl active:scale-95 transition-all outline-none">
+                  <button
+                    onClick={() => {
+                      if (uploadedImages.length > 0) {
+                        navigate('/xray', {
+                          state: {
+                            imageSrc: uploadedImages[0],
+                            imageName: `Patient Record: ${activePatient.name}`,
+                            patientId: activePatient.patient_id
+                          }
+                        });
+                      } else {
+                        toast({
+                          title: "No Images",
+                          description: "Please upload an image first to open the viewer",
+                          variant: "default"
+                        });
+                      }
+                    }}
+                    className="flex items-center gap-2 px-5 py-2 bg-primary hover:bg-primary/90 text-primary-foreground text-[11px] font-black rounded shadow-xl active:scale-95 transition-all outline-none"
+                  >
                     <Monitor className="h-3.5 w-3.5" /> OPEN VIEWER
                   </button>
                 </div>
@@ -924,8 +967,8 @@ export default function PatientsPage() {
         <div
           className="fixed z-[500] animate-in fade-in zoom-in-95 duration-200"
           style={{
-            top: `${menuPos.top}px`,
-            left: `${menuPos.left + 40}px`
+            top: `${Math.min(menuPos.top, window.innerHeight - 150)}px`,
+            left: `${menuPos.left > window.innerWidth - 250 ? menuPos.left - 210 : menuPos.left}px`
           }}
           onClick={(e) => e.stopPropagation()}
         >

@@ -132,7 +132,7 @@ const ImageCanvas = ({
         onSelectedAnnotationChange(clicked.id);
         setIsDragging(true);
         setDragOffset(pos);
-      } else {
+      } else if (isGlobalPanning) {
         setIsPanning(true);
         setDragStart({ x: e.clientX - position.x, y: e.clientY - position.y });
       }
@@ -250,7 +250,7 @@ const ImageCanvas = ({
 
   const handleTouchEnd = () => handleMouseUp();
 
-  // Draw annotations on canvas
+  // Draw image and annotations on canvas
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !imageSrc) return;
@@ -264,10 +264,38 @@ const ImageCanvas = ({
       canvas.height = img.height;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.filter = `brightness(${filters.brightness}%) contrast(${filters.contrast}%)`;
-      ctx.drawImage(img, 0, 0);
-      ctx.filter = "none";
 
+      // Draw the base image
+      ctx.drawImage(img, 0, 0);
+
+      // Apply Filters manually for high reliability on mobile
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+
+      const bRatio = filters.brightness / 100;
+      const cRatio = filters.contrast / 100;
+      const inv = filters.invert;
+      const gExp = 1 / filters.gamma;
+
+      // Pre-calculate Look Up Table
+      const lut = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) {
+        let n = i / 255;
+        if (inv) n = 1 - n;
+        n = (n - 0.5) * cRatio + 0.5;
+        n = n * bRatio;
+        if (gExp !== 1) n = Math.pow(Math.max(0, n), gExp);
+        lut[i] = Math.min(255, Math.max(0, n * 255));
+      }
+
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = lut[data[i]];     // R
+        data[i + 1] = lut[data[i + 1]]; // G
+        data[i + 2] = lut[data[i + 2]]; // B
+      }
+      ctx.putImageData(imageData, 0, 0);
+
+      // Draw all annotations
       const allAnnotations = [...annotations];
       if (currentAnnotation) allAnnotations.push(currentAnnotation);
 
@@ -280,6 +308,14 @@ const ImageCanvas = ({
           ctx.stroke();
         } else if (ann.type === "box" && ann.points.length > 1) {
           ctx.strokeRect(ann.points[0].x, ann.points[0].y, ann.points[1].x - ann.points[0].x, ann.points[1].y - ann.points[0].y);
+        } else if ((ann.type === "circle" || ann.type === "ellipse") && ann.points.length > 1) {
+          const rx = Math.abs(ann.points[1].x - ann.points[0].x) / 2;
+          const ry = Math.abs(ann.points[1].y - ann.points[0].y) / 2;
+          const r = Math.max(rx, ry);
+          const cx = Math.min(ann.points[0].x, ann.points[1].x) + rx;
+          const cy = Math.min(ann.points[0].y, ann.points[1].y) + ry;
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.stroke();
         } else {
           ann.points.forEach((p, i) => {
             if (i === 0) ctx.moveTo(p.x, p.y);

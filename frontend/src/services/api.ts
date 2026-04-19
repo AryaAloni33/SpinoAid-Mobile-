@@ -219,17 +219,36 @@ export const patientsApi = {
   delete: async (patientId: string) => {
     const user = getStorageItem<any>(KEYS.CURRENT_USER, null);
     let patients = getStorageItem<Patient[]>(KEYS.PATIENTS, []);
+    let images = getStorageItem<any[]>(KEYS.IMAGES, []);
+
     const initialLength = patients.length;
     patients = patients.filter((p) => !(p.patient_id === patientId && p.created_by === user?.id));
+    images = images.filter((img) => img.patient_id !== patientId);
 
     if (patients.length === initialLength) return mockError(404, "Patient not found");
 
     setStorageItem(KEYS.PATIENTS, patients);
+    setStorageItem(KEYS.IMAGES, images);
     return mockResponse({
       success: true,
       message: "Patient deleted",
     });
   },
+
+  getImages: async (patientId: string) => {
+    const images = getStorageItem<any[]>(KEYS.IMAGES, []);
+    return mockResponse({
+      success: true,
+      images: images.filter(img => img.patient_id === patientId).map(img => img.src)
+    });
+  },
+
+  addImage: async (patient_id: string, src: string) => {
+    const images = getStorageItem<any[]>(KEYS.IMAGES, []);
+    images.push({ patient_id, src, id: Date.now().toString() });
+    setStorageItem(KEYS.IMAGES, images);
+    return mockResponse({ success: true });
+  }
 };
 
 // ============= Annotations API =============
@@ -443,7 +462,8 @@ const callHfPredict = async (baseUrl: string, imageBlob: Blob): Promise<any> => 
   for (const attempt of attempts) {
     const r = await attempt();
     if (r.ok) return r.data;
-    errors.push({ status: r.status, text: r.text });
+    const err = r as { status: number; text: string };
+    errors.push({ status: err.status, text: err.text });
   }
 
   if (import.meta.env?.DEV) {

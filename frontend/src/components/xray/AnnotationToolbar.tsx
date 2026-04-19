@@ -66,8 +66,8 @@ const ToolItem = ({ icon: Icon, label, isActive, disabled, onClick, isMobile }: 
         : "text-foreground hover:bg-accent",
     )}
   >
-    <Icon className={cn(isMobile ? "h-5 w-5" : "h-4 w-4", "shrink-0")} />
-    <span className={cn(isMobile ? "text-[10px]" : "text-sm", "font-medium truncate")}>{label}</span>
+    <Icon className={cn(isMobile ? "h-6 w-6" : "h-4 w-4", "shrink-0")} />
+    {!isMobile && <span className="text-sm font-medium truncate">{label}</span>}
   </button>
 );
 
@@ -91,7 +91,7 @@ const AnnotationToolbar = ({
     { id: "line" as const, icon: Slash, label: "Line" },
     { id: "ruler" as const, icon: Ruler, label: "Ruler" },
     { id: "angle" as const, icon: Triangle, label: "Angle" },
-    { id: "freehand" as const, icon: Pencil, label: "Curve" },
+    { id: "freehand" as const, icon: Pencil, label: "Freehand" },
     { id: "text" as const, icon: Type, label: "Text" },
     { id: "eraser" as const, icon: Eraser, label: "Eraser" },
   ];
