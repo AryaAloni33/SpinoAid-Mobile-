@@ -6,6 +6,7 @@ Medical Image Analysis with Deep Learning
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+import base64
 from config import ALLOWED_ORIGINS
 from auth.routes import router as auth_router
 from patients.routes import router as patients_router
@@ -66,18 +67,24 @@ async def upload_image(file: UploadFile = File(...)):
 @app.post("/api/analyze")
 async def analyze_image(request: dict):
     """Run DL analysis on an uploaded image. Integrate your model here."""
-    # TODO: Load image, run through DL model, return predictions
-    return {
-        "success": True,
-        "message": "Analysis complete",
-        "predictions": [
-            {
-                "label": "Example Finding",
-                "confidence": 0.95,
-                "region": {"x": 100, "y": 100, "width": 50, "height": 50},
-            }
-        ],
-    }
+    if 'image_data' not in request:
+        raise HTTPException(status_code=400, detail="Missing image_data field")
+        
+    try:
+        # Decode base64
+        image_data = base64.b64decode(request['image_data'].split(',')[-1])
+        
+        # Run detection
+        from model.femoral_detector import annotator
+        results = annotator.detect_all(image_data)
+        
+        return {
+            "success": True,
+            "message": "Analysis complete",
+            "results": results
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============= DL Model Manager =============

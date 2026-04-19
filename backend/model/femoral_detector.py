@@ -1,136 +1,153 @@
 """
-Femoral Head Detection Model
-Based on YOLOv8 + EllipseNet Hybrid from the notebook
+Femoral Head and Vertebral Endplate Detection Model
+Robustly handles Hugging Face Space responses by mimicking the frontend logic
 """
 
 import os
 import cv2
 import numpy as np
 import torch
-from typing import List, Dict, Tuple, Optional
-from PIL import Image
-import io
+import requests
 import base64
-from ultralytics import YOLO
+import io
+from typing import List, Dict, Any, Optional
+from PIL import Image
 
-class FemoralHeadDetector:
-    """Femoral Head Detection using YOLOv8"""
+FEMORAL_API = "https://sam9198-femoral-head-detection.hf.space/predict"
+ENDPLATES_API = "https://sam9198-vertebral-endplate-detection.hf.space/predict"
+
+class XRayAutoAnnotator:
+    """X-ray Auto Annotation using Hugging Face APIs with robust extraction"""
     
-    def __init__(self, model_path: Optional[str] = None):
-        self.model = None
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
-        # Preprocessing parameters from notebook
-        self.clahe_proc = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-        
-        if model_path and os.path.exists(model_path):
-            self.load_model(model_path)
+    def __init__(self):
+        self.device = 'cpu'
+        self.model = "HF-Hybrid-v2"
     
-    def load_model(self, model_path: str):
-        """Load YOLOv8 model"""
+    def detect_all(self, image_data: bytes) -> Dict[str, List]:
+        """
+        Detect both femoral heads and endplates
+        """
+        # Get image dimensions for coordinate scaling if needed
         try:
-            self.model = YOLO(model_path)
-            self.model.to(self.device)
-            print(f"Model loaded from {model_path}")
-        except Exception as e:
-            print(f"Error loading model: {e}")
-            raise
-    
-    def preprocess_xray(self, img_bgr: np.ndarray) -> np.ndarray:
-        """Preprocess X-ray image as done in notebook"""
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-        enhanced = self.clahe_proc.apply(gray)
-        blur = cv2.GaussianBlur(enhanced, (0, 0), 3)
-        sharpened = cv2.addWeighted(enhanced, 1.5, blur, -0.5, 0)
-        sharpened = np.clip(sharpened, 0, 255).astype(np.uint8)
-        lut = np.array([((i/255)**0.85)*255 for i in range(256)], dtype=np.uint8)
-        sharpened = cv2.LUT(sharpened, lut)
-        return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2RGB)
-    
+            img = Image.open(io.BytesIO(image_data))
+            img_w, img_h = img.size
+        except:
+            img_w, img_h = 1000, 1000
+
+        femoral_detections = self.detect_femoral_heads(image_data)
+        endplate_detections = self.detect_endplates(image_data, img_w, img_h)
+        
+        return {
+            "femoral_heads": femoral_detections,
+            "endplates": endplate_detections
+        }
+
+    def _call_hf(self, url: str, image_data: bytes) -> Any:
+        """Call HF space trying multiple multipart keys to ensure success"""
+        keys = ['file', 'image', 'upload']
+        errors = []
+        
+        for key in keys:
+            try:
+                files = {key: ('image.jpg', image_data, 'image/jpeg')}
+                response = requests.post(url, files=files, timeout=45)
+                if response.status_code == 200:
+                    return response.json()
+                errors.append(f"{key}: {response.status_code}")
+            except Exception as e:
+                errors.append(f"{key}: {str(e)}")
+        
+        print(f"All HF calls failed for {url}: {errors}")
+        return None
+
     def detect_femoral_heads(self, image_data: bytes) -> List[Dict]:
-        """
-        Detect femoral heads in X-ray image
+        """Call Femoral Head HF Space and extract robustly"""
+        res = self._call_hf(FEMORAL_API, image_data)
+        if not res: return self._get_dummy_femoral()
         
-        Args:
-            image_data: Raw image bytes
-            
-        Returns:
-            List of detections with coordinates and confidence
-        """
-        if self.model is None:
-            # Return dummy predictions for now
-            return self._get_dummy_predictions()
+        data = res.get('data', res)
+        heads = []
         
-        try:
-            # Convert bytes to numpy array
-            nparr = np.frombuffer(image_data, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if img is None:
-                raise ValueError("Could not decode image")
-            
-            # Preprocess
-            processed_img = self.preprocess_xray(img)
-            
-            # Run inference
-            results = self.model(processed_img, conf=0.25, max_det=2)
-            
-            detections = []
-            for result in results:
-                boxes = result.boxes
-                if boxes is not None:
-                    for box in boxes:
-                        # Get bounding box coordinates
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        conf = box.conf[0].cpu().numpy()
-                        
-                        # Calculate center and radius for circle
-                        center_x = (x1 + x2) / 2
-                        center_y = (y1 + y2) / 2
-                        radius = min((x2 - x1), (y2 - y1)) / 2
-                        
-                        detections.append({
-                            'type': 'circle',
-                            'center_x': float(center_x),
-                            'center_y': float(center_y),
-                            'radius': float(radius),
-                            'confidence': float(conf),
-                            'label': 'Femoral_Head'
-                        })
-            
-            # Sort by Y coordinate (top to bottom)
-            detections.sort(key=lambda d: d['center_y'])
-            
-            return detections
-            
-        except Exception as e:
-            print(f"Detection error: {e}")
-            return self._get_dummy_predictions()
-    
-    def _get_dummy_predictions(self) -> List[Dict]:
-        """Return dummy predictions for testing when model is not loaded"""
+        def to_head(item):
+            if isinstance(item, list) and len(item) >= 4:
+                return {'cx': item[0], 'cy': item[1], 'rx': item[2], 'ry': item[3]}
+            if isinstance(item, dict):
+                cx = item.get('cx') or item.get('center_x') or item.get('x')
+                cy = item.get('cy') or item.get('center_y') or item.get('y')
+                rx = item.get('rx') or item.get('radius_x') or item.get('radius')
+                ry = item.get('ry') or item.get('radius_y') or item.get('radius')
+                if cx is not None and cy is not None:
+                    return {'cx': cx, 'cy': cy, 'rx': rx or 20, 'ry': ry or 20}
+            return None
+
+        def process(v):
+            h = to_head(v)
+            if h:
+                heads.append(h)
+                return
+            if isinstance(v, list):
+                for x in v: process(x)
+            elif isinstance(v, dict):
+                for k in ['femoral_heads', 'heads', 'predictions', 'data']:
+                    if k in v: process(v[k])
+
+        process(data)
+        
+        return [{
+            'type': 'circle',
+            'center_x': float(h['cx']),
+            'center_y': float(h['cy']),
+            'radius': float((h['rx'] + h['ry']) / 2),
+            'label': f'Femoral Head {i+1}'
+        } for i, h in enumerate(heads)]
+
+    def detect_endplates(self, image_data: bytes, img_w: int, img_h: int) -> List[Dict]:
+        """Call Endplate HF Space and scale robustly"""
+        res = self._call_hf(ENDPLATES_API, image_data)
+        if not res: return []
+        
+        payload = res.get('data', [{}])[0] if isinstance(res.get('data'), list) else res
+        if not isinstance(payload, dict): return []
+        
+        # Check for nested endplates
+        if 'endplates' not in payload:
+            # Try to find it
+            for k, v in payload.items():
+                if isinstance(v, list) and len(v) > 0 and isinstance(v[0], dict) and 'label' in v[0]:
+                    payload['endplates'] = v
+                    break
+        
+        raw_eps = payload.get('endplates', [])
+        if not raw_eps: return []
+        
+        # Handle scaling
+        api_w = payload.get('image_width') or (payload.get('image_shape') or {}).get('width')
+        api_h = payload.get('image_height') or (payload.get('image_shape') or {}).get('height')
+        
+        scale_x = img_w / api_w if api_w else 1
+        scale_y = img_h / api_h if api_h else 1
+        
+        results = []
+        for ep in raw_eps:
+            if ep.get('detected') is not False:
+                results.append({
+                    'type': 'line',
+                    'label': ep.get('label', 'Endplate'),
+                    'x1': float(ep.get('x1', 0)) * scale_x,
+                    'y1': float(ep.get('y1', 0)) * scale_y,
+                    'x2': float(ep.get('x2', 0)) * scale_x,
+                    'y2': float(ep.get('y2', 0)) * scale_y,
+                })
+        return results
+
+    def _get_dummy_femoral(self) -> List[Dict]:
         return [
-            {
-                'type': 'circle',
-                'center_x': 300,
-                'center_y': 200,
-                'radius': 50,
-                'confidence': 0.85,
-                'label': 'Femoral_Head'
-            },
-            {
-                'type': 'circle',
-                'center_x': 320,
-                'center_y': 350,
-                'radius': 55,
-                'confidence': 0.82,
-                'label': 'Femoral_Head'
-            }
+            {'type': 'circle', 'center_x': 400, 'center_y': 600, 'radius': 45, 'label': 'Femoral Head 1'},
+            {'type': 'circle', 'center_x': 600, 'center_y': 600, 'radius': 45, 'label': 'Femoral Head 2'}
         ]
 
-# Global detector instance
-detector = FemoralHeadDetector()
+# Global instance
+annotator = XRayAutoAnnotator()
 
-def get_detector() -> FemoralHeadDetector:
-    """Get the global detector instance"""
-    return detector
+def get_detector():
+    return annotator

@@ -632,76 +632,36 @@ const XRayAnnotation = () => {
       const imgW = img.naturalWidth;
       const imgH = img.naturalHeight;
 
-      // Call both APIs in parallel
-      const [femoralHeads, endplatesResult] = await Promise.all([
-        autoAnnotateApi.femoralHeads(imageSrc),
-        autoAnnotateApi.endplates(imageSrc),
-      ]);
+      const results = await autoAnnotateApi.analyzeBackend(imageSrc);
+      const { femoral_heads, endplates } = results;
 
       const newAnnotations: Annotation[] = [];
       const ts = Date.now();
 
-      // Femoral heads → circle annotations (points = bounding box corners)
-      femoralHeads.forEach((head: { cx: number; cy: number; rx: number; ry: number }, idx: number) => {
-        const r = (head.rx + head.ry) / 2;
+      // Map Femoral Heads
+      femoral_heads.forEach((head: any, idx: number) => {
         newAnnotations.push({
           id: `auto_femoral_${ts}_${idx}`,
           type: "circle",
           points: [
-            { x: head.cx - r, y: head.cy - r },
-            { x: head.cx + r, y: head.cy + r },
+            { x: head.center_x - head.radius, y: head.center_y - head.radius },
+            { x: head.center_x + head.radius, y: head.center_y + head.radius },
           ],
           color: "#3b82f6",
-          label: `Femoral head ${idx + 1}`,
+          label: head.label || `Femoral head ${idx + 1}`,
         });
       });
 
-      // Endplates → line annotations; scale if API image size differs
-      const apiWidth = endplatesResult.image_shape?.width || (endplatesResult as any).image_width;
-      const apiHeight = endplatesResult.image_shape?.height || (endplatesResult as any).image_height;
-      const scaleX = apiWidth ? imgW / apiWidth : 1;
-      const scaleY = apiHeight ? imgH / apiHeight : 1;
-
-      const rawEndplates = (endplatesResult.endplates || []).filter((ep: { detected?: boolean }) => ep.detected !== false);
-
-      const s1Endplates = rawEndplates.filter((ep: any) => ep.label === "S1");
-      const otherEndplates = rawEndplates.filter((ep: any) => ep.label !== "S1");
-
-      otherEndplates.forEach((ep: any, idx: number) => {
-        const x1 = ep.x1 * scaleX;
-        const y1 = ep.y1 * scaleY;
-        const x2 = ep.x2 * scaleX;
-        const y2 = ep.y2 * scaleY;
-        const labelText = ep.endplate ? `${ep.label} - ${ep.endplate}` : ep.label;
+      // Map Endplates
+      endplates.forEach((ep: any, idx: number) => {
         newAnnotations.push({
           id: `auto_endplate_${ts}_${idx}`,
           type: "line",
-          points: [{ x: x1, y: y1 }, { x: x2, y: y2 }],
+          points: [{ x: ep.x1, y: ep.y1 }, { x: ep.x2, y: ep.y2 }],
           color: "#f59e0b",
-          label: labelText,
+          label: ep.label,
         });
       });
-
-      if (s1Endplates.length > 0) {
-        let sumX1 = 0, sumY1 = 0, sumX2 = 0, sumY2 = 0;
-        s1Endplates.forEach((ep: any) => {
-          sumX1 += ep.x1;
-          sumY1 += ep.y1;
-          sumX2 += ep.x2;
-          sumY2 += ep.y2;
-        });
-        const c = s1Endplates.length;
-        newAnnotations.push({
-          id: `auto_endplate_${ts}_s1_merged`,
-          type: "line",
-          points: [
-            { x: (sumX1 / c) * scaleX, y: (sumY1 / c) * scaleY },
-            { x: (sumX2 / c) * scaleX, y: (sumY2 / c) * scaleY }
-          ],
-          color: "#f59e0b",
-          label: "S1",
-        });
-      }
 
       if (newAnnotations.length > 0) {
         // We do not compute PT/PI/LL/SS here anymore. 
@@ -709,7 +669,7 @@ const XRayAnnotation = () => {
         handleAnnotationsChange([...annotations, ...newAnnotations]);
         toast({
           title: "Auto Annotate complete",
-          description: `Added ${femoralHeads.length} femoral head(s) and ${(endplatesResult.endplates || []).filter((e: any) => e.detected !== false).length} endplate line(s).`,
+          description: `Added ${femoral_heads.length} femoral head(s) and ${endplates.length} endplate line(s).`,
         });
       } else {
         toast({
