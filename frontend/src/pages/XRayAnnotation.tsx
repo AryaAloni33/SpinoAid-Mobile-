@@ -881,7 +881,7 @@ const XRayAnnotation = () => {
           onSelectedAnnotationChange={setSelectedAnnotation}
           onToolChange={handleToolChange}
           showAngles={showAngles}
-          showLabels={false}
+          showLabels={true}
         />
 
         {!isMobile && (
