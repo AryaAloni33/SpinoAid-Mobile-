@@ -1,5 +1,6 @@
 import "./global.css";
 import React, { useState } from 'react';
+import * as FileSystem from 'expo-file-system';
 import {
   View,
   Text,
@@ -47,16 +48,28 @@ import * as ImagePicker from 'expo-image-picker';
 
 const { width, height } = Dimensions.get('window');
 
-const FEMORAL_API = "https://sam9198-femoral-head-detection.hf.space/predict";
-const ENDPLATES_API = "https://sam9198-vertebral-endplate-detection.hf.space/predict";
+// Render-hosted backend — proxies internally to Hugging Face
+const RENDER_BACKEND_URL = "https://spine-backend-xox7.onrender.com";
 
 
 
 // --- Main App ---
 
 export default function App() {
+  const [isReady, setIsReady] = useState(false);
   const [currentScreen, setCurrentScreen] = useState<'dashboard' | 'annotation'>('dashboard');
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => setIsReady(true), 1000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (!isReady) {
+    return <View style={{ flex: 1, backgroundColor: '#0F172A' }} />;
+  }
+
   const [imageUri, setImageUri] = useState<string | null>(null);
+  const [imageDimensions, setImageDimensions] = useState({ width: 1000, height: 1000 });
   const [isProcessing, setIsProcessing] = useState(false);
   const [annotations, setAnnotations] = useState<any[]>([]);
   const [phase, setPhase] = useState<'adjust' | 'results'>('adjust');
@@ -91,12 +104,12 @@ export default function App() {
   const pickImage = async (useCamera: boolean) => {
     try {
       if (Platform.OS === 'android') {
-        const permissions = useCamera 
+        const permissions = useCamera
           ? [PermissionsAndroid.PERMISSIONS.CAMERA]
-          : (Platform.Version >= 33 
-             ? [PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES] 
-             : [PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE]);
-        
+          : (Platform.Version >= 33
+            ? [PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES]
+            : [PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE]);
+
         const granted = await PermissionsAndroid.requestMultiple(permissions);
         const allGranted = Object.values(granted).every(status => status === PermissionsAndroid.RESULTS.GRANTED);
 
@@ -112,7 +125,7 @@ export default function App() {
         allowsEditing: false,
       };
 
-      const result = useCamera 
+      const result = useCamera
         ? await ImagePicker.launchCameraAsync(options)
         : await ImagePicker.launchImageLibraryAsync(options);
 
@@ -127,6 +140,10 @@ export default function App() {
 
   const handleImagePick = (asset: any) => {
     setImageUri(asset.uri);
+    // Store actual image dimensions for coordinate scaling
+    if (asset.width && asset.height) {
+      setImageDimensions({ width: asset.width, height: asset.height });
+    }
     setCurrentScreen('annotation');
     setPhase('adjust');
     setAnnotations([]);
@@ -147,41 +164,78 @@ export default function App() {
     setIsProcessing(true);
 
     try {
-      const formData = new FormData();
-      formData.append('file', {
-        uri: imageUri,
-        name: 'xray.jpg',
-        type: 'image/jpeg',
-      } as any);
+      // Read image as base64 to send to Render backend
+      const base64Image = await FileSystem.readAsStringAsync(imageUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
 
-      const [femoralRes, endplatesRes] = await Promise.all([
-        fetch(FEMORAL_API, { method: 'POST', body: formData }),
-        fetch(ENDPLATES_API, { method: 'POST', body: formData })
-      ]);
+      const response = await fetch(`${RENDER_BACKEND_URL}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image_data: base64Image }),
+      });
 
-      const femoralData = await femoralRes.json();
-      const endplatesData = await endplatesRes.json();
-
-      const newAnns: any[] = [];
-      const payloadFemoral = femoralData?.data?.[0] || femoralData;
-      if (Array.isArray(payloadFemoral)) {
-        payloadFemoral.forEach((head: any, i: number) => {
-          newAnns.push({ label: `Femoral head ${i + 1}`, color: '#3b82f6' });
-        });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Backend error ${response.status}: ${errText}`);
       }
 
-      const payloadEndplates = endplatesData?.data?.[0] || endplatesData;
-      const count = (payloadEndplates?.endplates || []).length || 0;
-      for (let i = 0; i < count; i++) {
-        newAnns.push({ label: `Endplate ${i + 1}`, color: '#f59e0b' });
+      const data = await response.json();
+      const results = data?.results || {};
+
+      // Canvas is rendered at `width x width` (square); scale from original image coords
+      const canvasSize = width;
+      const imgW = imageDimensions.width || 1000;
+      const imgH = imageDimensions.height || 1000;
+
+      // Scale factor: image is displayed contain in a square canvas
+      // contain mode: fit the image to the smaller dimension
+      const scale = Math.min(canvasSize / imgW, canvasSize / imgH);
+      const offsetX = (canvasSize - imgW * scale) / 2;
+      const offsetY = (canvasSize - imgH * scale) / 2;
+
+      const toCanvasX = (x: number) => offsetX + x * scale;
+      const toCanvasY = (y: number) => offsetY + y * scale;
+
+      const newAnns: any[] = [];
+
+      // Femoral heads → circles
+      const femoralHeads: any[] = results.femoral_heads || [];
+      femoralHeads.forEach((head: any, i: number) => {
+        newAnns.push({
+          type: 'circle',
+          label: head.label || `Femoral Head ${i + 1}`,
+          color: '#3b82f6',
+          cx: toCanvasX(head.center_x),
+          cy: toCanvasY(head.center_y),
+          r: (head.radius || 30) * scale,
+        });
+      });
+
+      // Endplates → lines
+      const endplates: any[] = results.endplates || [];
+      endplates.forEach((ep: any, i: number) => {
+        newAnns.push({
+          type: 'line',
+          label: ep.label || `Endplate ${i + 1}`,
+          color: '#f59e0b',
+          x1: toCanvasX(ep.x1),
+          y1: toCanvasY(ep.y1),
+          x2: toCanvasX(ep.x2),
+          y2: toCanvasY(ep.y2),
+        });
+      });
+
+      if (newAnns.length === 0) {
+        Alert.alert('No detections', 'The AI model did not detect any structures in this image.');
       }
 
       setAnnotations(newAnns);
       setPhase('results');
-      setActiveTab(null); // Close toolkit
-    } catch (error) {
+      setActiveTab(null);
+    } catch (error: any) {
       console.error(error);
-      Alert.alert("Error", "Failed to process image on the backend.");
+      Alert.alert("Error", `Failed to process image.\n${error?.message || 'Unknown error'}`);
     } finally {
       setIsProcessing(false);
     }
@@ -265,7 +319,7 @@ export default function App() {
           </TouchableOpacity>
           <View className="flex-row items-center">
             <Text className="text-white font-bold text-base mr-3">Analyze X-Ray</Text>
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={() => setIsDashboardCollapsed(!isDashboardCollapsed)}
               className="p-1.5 bg-white/10 rounded-lg flex-row items-center"
             >
@@ -396,12 +450,46 @@ export default function App() {
               </View>
             )}
 
+            {/* Render actual detected shapes as SVG overlay */}
             {phase === 'results' && annotations.length > 0 && (
-              <View className="absolute top-0 left-0 right-0 bottom-0 items-center justify-center pointer-events-none">
-                <View className="p-3 bg-white/10 rounded-xl border border-white/20">
-                  <Text className="text-white text-xs opacity-70">Annotations Layer Active</Text>
-                </View>
-              </View>
+              <Svg
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+                pointerEvents="none"
+              >
+                {annotations.map((ann: any, idx: number) => {
+                  if (ann.type === 'circle') {
+                    return (
+                      <React.Fragment key={idx}>
+                        <SvgCircle
+                          cx={ann.cx}
+                          cy={ann.cy}
+                          r={ann.r}
+                          stroke={ann.color}
+                          strokeWidth="3"
+                          fill={`${ann.color}33`}
+                        />
+                        <SvgCircle cx={ann.cx} cy={ann.cy} r="4" fill={ann.color} />
+                      </React.Fragment>
+                    );
+                  }
+                  if (ann.type === 'line') {
+                    return (
+                      <React.Fragment key={idx}>
+                        <SvgLine
+                          x1={ann.x1} y1={ann.y1}
+                          x2={ann.x2} y2={ann.y2}
+                          stroke={ann.color}
+                          strokeWidth="3"
+                          strokeLinecap="round"
+                        />
+                        <SvgCircle cx={ann.x1} cy={ann.y1} r="4" fill={ann.color} />
+                        <SvgCircle cx={ann.x2} cy={ann.y2} r="4" fill={ann.color} />
+                      </React.Fragment>
+                    );
+                  }
+                  return null;
+                })}
+              </Svg>
             )}
           </View>
         </View>
@@ -410,145 +498,145 @@ export default function App() {
         {!isDashboardCollapsed && (
           <View className="bg-[#0F172A]">
 
-          {/* Expanded Tool Panel — shows when a tab is active */}
-          {phase === 'adjust' && !isProcessing && activeTab !== null && (
-            <View className="bg-[#1E293B] px-5 pt-5 pb-3">
-              {activeTab === 'adjust' ? (
-                <>
-                  <View className="flex-row items-center justify-between mb-4">
-                    <Text className="text-white font-bold text-sm">Image Filters</Text>
-                    <TouchableOpacity onPress={() => setFilters({ brightness: 1, contrast: 1, gamma: 1 })}>
-                      <Text className="text-[#14B8A6] font-bold text-xs uppercase">Reset</Text>
-                    </TouchableOpacity>
-                  </View>
-                  <View className="flex-row gap-3 mb-3">
-                    <TouchableOpacity
-                      onPress={() => setActiveAdjust(activeAdjust === 'brightness' ? null : 'brightness')}
-                      className={`flex-1 items-center py-3 rounded-2xl border ${activeAdjust === 'brightness' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
-                    >
-                      <Sun size={18} color={activeAdjust === 'brightness' ? '#FFF' : '#94A3B8'} />
-                      <Text className={`text-[10px] font-bold mt-1 uppercase ${activeAdjust === 'brightness' ? 'text-white' : 'text-[#94A3B8]'}`}>Brightness</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => setActiveAdjust(activeAdjust === 'contrast' ? null : 'contrast')}
-                      className={`flex-1 items-center py-3 rounded-2xl border ${activeAdjust === 'contrast' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
-                    >
-                      <Moon size={18} color={activeAdjust === 'contrast' ? '#FFF' : '#94A3B8'} />
-                      <Text className={`text-[10px] font-bold mt-1 uppercase ${activeAdjust === 'contrast' ? 'text-white' : 'text-[#94A3B8]'}`}>Contrast</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      onPress={() => setActiveAdjust(activeAdjust === 'gamma' ? null : 'gamma')}
-                      className={`flex-1 items-center py-3 rounded-2xl border ${activeAdjust === 'gamma' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
-                    >
-                      <Settings2 size={18} color={activeAdjust === 'gamma' ? '#FFF' : '#94A3B8'} />
-                      <Text className={`text-[10px] font-bold mt-1 uppercase ${activeAdjust === 'gamma' ? 'text-white' : 'text-[#94A3B8]'}`}>Gamma</Text>
-                    </TouchableOpacity>
-                  </View>
-                  {activeAdjust && (
-                    <View className="bg-white/5 rounded-2xl px-5 py-4">
-                      <View className="flex-row items-center justify-between mb-2">
-                        <Text className="text-xs font-bold uppercase tracking-widest text-[#94A3B8]">{activeAdjust}</Text>
-                        <Text className="text-sm font-black text-[#14B8A6]">{filters[activeAdjust as keyof typeof filters].toFixed(1)}x</Text>
-                      </View>
-                      <Slider
-                        style={{ width: '100%', height: 40 }}
-                        minimumValue={0.1}
-                        maximumValue={2.0}
-                        step={0.1}
-                        value={filters[activeAdjust as keyof typeof filters]}
-                        onValueChange={(val) => setFilters(prev => ({ ...prev, [activeAdjust as keyof typeof filters]: val }))}
-                        minimumTrackTintColor="#14B8A6"
-                        maximumTrackTintColor="#ffffff33"
-                        thumbTintColor="#14B8A6"
-                      />
+            {/* Expanded Tool Panel — shows when a tab is active */}
+            {phase === 'adjust' && !isProcessing && activeTab !== null && (
+              <View className="bg-[#1E293B] px-5 pt-5 pb-3">
+                {activeTab === 'adjust' ? (
+                  <>
+                    <View className="flex-row items-center justify-between mb-4">
+                      <Text className="text-white font-bold text-sm">Image Filters</Text>
+                      <TouchableOpacity onPress={() => setFilters({ brightness: 1, contrast: 1, gamma: 1 })}>
+                        <Text className="text-[#14B8A6] font-bold text-xs uppercase">Reset</Text>
+                      </TouchableOpacity>
                     </View>
-                  )}
-                </>
-              ) : (
-                <>
-                  <View className="flex-row items-center justify-between mb-4">
-                    <Text className="text-white font-bold text-sm">Selection Tools</Text>
-                    <Text className="text-[#94A3B8] text-xs">Tap image to use</Text>
-                  </View>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3 flex-row">
-                    {TOOLS.map((tool) => {
-                      const Icon = tool.icon;
-                      const isActive = activeTool === tool.id;
-                      return (
-                        <TouchableOpacity
-                          key={tool.id}
-                          onPress={() => setActiveTool(tool.id)}
-                          className={`items-center justify-center w-16 h-16 mr-3 rounded-2xl border ${isActive ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
-                        >
-                          <Icon size={20} color={isActive ? '#FFF' : '#94A3B8'} />
-                          <Text className={`text-[9px] font-bold mt-1 uppercase ${isActive ? 'text-white' : 'text-[#94A3B8]'}`}>{tool.label}</Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </ScrollView>
-                </>
-              )}
-            </View>
-          )}
-
-          {/* Results Panel */}
-          {phase === 'results' && !isProcessing && (
-            <View className="bg-[#1E293B] px-5 pt-5 pb-3">
-              <View className="flex-row items-center justify-between mb-4">
-                <Text className="text-white font-bold text-sm">Detected Labels</Text>
-                <TouchableOpacity onPress={() => setPhase('adjust')}>
-                  <Text className="text-[#14B8A6] font-bold text-xs uppercase">Adjust Again</Text>
-                </TouchableOpacity>
+                    <View className="flex-row gap-3 mb-3">
+                      <TouchableOpacity
+                        onPress={() => setActiveAdjust(activeAdjust === 'brightness' ? null : 'brightness')}
+                        className={`flex-1 items-center py-3 rounded-2xl border ${activeAdjust === 'brightness' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
+                      >
+                        <Sun size={18} color={activeAdjust === 'brightness' ? '#FFF' : '#94A3B8'} />
+                        <Text className={`text-[10px] font-bold mt-1 uppercase ${activeAdjust === 'brightness' ? 'text-white' : 'text-[#94A3B8]'}`}>Brightness</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setActiveAdjust(activeAdjust === 'contrast' ? null : 'contrast')}
+                        className={`flex-1 items-center py-3 rounded-2xl border ${activeAdjust === 'contrast' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
+                      >
+                        <Moon size={18} color={activeAdjust === 'contrast' ? '#FFF' : '#94A3B8'} />
+                        <Text className={`text-[10px] font-bold mt-1 uppercase ${activeAdjust === 'contrast' ? 'text-white' : 'text-[#94A3B8]'}`}>Contrast</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setActiveAdjust(activeAdjust === 'gamma' ? null : 'gamma')}
+                        className={`flex-1 items-center py-3 rounded-2xl border ${activeAdjust === 'gamma' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
+                      >
+                        <Settings2 size={18} color={activeAdjust === 'gamma' ? '#FFF' : '#94A3B8'} />
+                        <Text className={`text-[10px] font-bold mt-1 uppercase ${activeAdjust === 'gamma' ? 'text-white' : 'text-[#94A3B8]'}`}>Gamma</Text>
+                      </TouchableOpacity>
+                    </View>
+                    {activeAdjust && (
+                      <View className="bg-white/5 rounded-2xl px-5 py-4">
+                        <View className="flex-row items-center justify-between mb-2">
+                          <Text className="text-xs font-bold uppercase tracking-widest text-[#94A3B8]">{activeAdjust}</Text>
+                          <Text className="text-sm font-black text-[#14B8A6]">{filters[activeAdjust as keyof typeof filters].toFixed(1)}x</Text>
+                        </View>
+                        <Slider
+                          style={{ width: '100%', height: 40 }}
+                          minimumValue={0.1}
+                          maximumValue={2.0}
+                          step={0.1}
+                          value={filters[activeAdjust as keyof typeof filters]}
+                          onValueChange={(val) => setFilters(prev => ({ ...prev, [activeAdjust as keyof typeof filters]: val }))}
+                          minimumTrackTintColor="#14B8A6"
+                          maximumTrackTintColor="#ffffff33"
+                          thumbTintColor="#14B8A6"
+                        />
+                      </View>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <View className="flex-row items-center justify-between mb-4">
+                      <Text className="text-white font-bold text-sm">Selection Tools</Text>
+                      <Text className="text-[#94A3B8] text-xs">Tap image to use</Text>
+                    </View>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-3 flex-row">
+                      {TOOLS.map((tool) => {
+                        const Icon = tool.icon;
+                        const isActive = activeTool === tool.id;
+                        return (
+                          <TouchableOpacity
+                            key={tool.id}
+                            onPress={() => setActiveTool(tool.id)}
+                            className={`items-center justify-center w-16 h-16 mr-3 rounded-2xl border ${isActive ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
+                          >
+                            <Icon size={20} color={isActive ? '#FFF' : '#94A3B8'} />
+                            <Text className={`text-[9px] font-bold mt-1 uppercase ${isActive ? 'text-white' : 'text-[#94A3B8]'}`}>{tool.label}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  </>
+                )}
               </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-4" style={{ height: 36 }}>
-                {annotations.map((ann, i) => (
-                  <View key={i} className="bg-white/10 border border-white/10 px-4 h-9 rounded-full flex-row items-center mr-2">
-                    <View className="w-2 h-2 rounded-full mr-2" style={{ backgroundColor: ann.color }} />
-                    <Text className="text-white font-bold text-xs">{ann.label}</Text>
-                  </View>
-                ))}
-              </ScrollView>
-              <View className="flex-row gap-3">
-                <TouchableOpacity onPress={() => setCurrentScreen('dashboard')} className="flex-1 bg-white/10 py-4 rounded-2xl items-center">
-                  <Text className="text-[#94A3B8] font-black uppercase text-xs">Discard</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={saveAnnotation} className="flex-[2] bg-emerald-600 py-4 rounded-2xl items-center flex-row justify-center">
-                  <Check size={18} color="#FFF" />
-                  <Text className="text-white font-black uppercase text-xs ml-2">Save Analysis to Gallery</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
+            )}
 
-          {/* Bottom Bar — Always Visible */}
-          {phase === 'adjust' && !isProcessing && (
-            <View className="bg-[#0F172A] border-t border-white/5 px-4 pt-4 pb-8">
-              {/* Auto-Annotate Button */}
-              <TouchableOpacity onPress={callAutoAnnotate} className="bg-[#115E59] w-full py-4 rounded-2xl items-center flex-row justify-center mb-3 shadow-lg">
-                <Wand2 size={18} color="#FFF" />
-                <Text className="text-white font-black text-sm uppercase tracking-tight ml-2">Run Auto Annotate</Text>
-              </TouchableOpacity>
-
-              {/* Two Tab Buttons */}
-              <View className="flex-row gap-3">
-                <TouchableOpacity
-                  onPress={() => setActiveTab(activeTab === 'manual' ? null : 'manual')}
-                  className={`flex-1 py-3 rounded-2xl items-center border ${activeTab === 'manual' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
-                >
-                  <Text className={`font-bold text-xs uppercase ${activeTab === 'manual' ? 'text-white' : 'text-[#94A3B8]'}`}>Selection Tools</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setActiveTab(activeTab === 'adjust' ? null : 'adjust')}
-                  className={`flex-1 py-3 rounded-2xl items-center border ${activeTab === 'adjust' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
-                >
-                  <Text className={`font-bold text-xs uppercase ${activeTab === 'adjust' ? 'text-white' : 'text-[#94A3B8]'}`}>Image Adjustments</Text>
-                </TouchableOpacity>
+            {/* Results Panel */}
+            {phase === 'results' && !isProcessing && (
+              <View className="bg-[#1E293B] px-5 pt-5 pb-3">
+                <View className="flex-row items-center justify-between mb-4">
+                  <Text className="text-white font-bold text-sm">Detected Labels</Text>
+                  <TouchableOpacity onPress={() => setPhase('adjust')}>
+                    <Text className="text-[#14B8A6] font-bold text-xs uppercase">Adjust Again</Text>
+                  </TouchableOpacity>
+                </View>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} className="mb-4" style={{ height: 36 }}>
+                  {annotations.map((ann, i) => (
+                    <View key={i} className="bg-white/10 border border-white/10 px-4 h-9 rounded-full flex-row items-center mr-2">
+                      <View className="w-2 h-2 rounded-full mr-2" style={{ backgroundColor: ann.color }} />
+                      <Text className="text-white font-bold text-xs">{ann.label}</Text>
+                    </View>
+                  ))}
+                </ScrollView>
+                <View className="flex-row gap-3">
+                  <TouchableOpacity onPress={() => setCurrentScreen('dashboard')} className="flex-1 bg-white/10 py-4 rounded-2xl items-center">
+                    <Text className="text-[#94A3B8] font-black uppercase text-xs">Discard</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={saveAnnotation} className="flex-[2] bg-emerald-600 py-4 rounded-2xl items-center flex-row justify-center">
+                    <Check size={18} color="#FFF" />
+                    <Text className="text-white font-black uppercase text-xs ml-2">Save Analysis to Gallery</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
-            </View>
-          )}
-        </View>
-      )}
-    </SafeAreaView>
+            )}
+
+            {/* Bottom Bar — Always Visible */}
+            {phase === 'adjust' && !isProcessing && (
+              <View className="bg-[#0F172A] border-t border-white/5 px-4 pt-4 pb-8">
+                {/* Auto-Annotate Button */}
+                <TouchableOpacity onPress={callAutoAnnotate} className="bg-[#115E59] w-full py-4 rounded-2xl items-center flex-row justify-center mb-3 shadow-lg">
+                  <Wand2 size={18} color="#FFF" />
+                  <Text className="text-white font-black text-sm uppercase tracking-tight ml-2">Run Auto Annotate</Text>
+                </TouchableOpacity>
+
+                {/* Two Tab Buttons */}
+                <View className="flex-row gap-3">
+                  <TouchableOpacity
+                    onPress={() => setActiveTab(activeTab === 'manual' ? null : 'manual')}
+                    className={`flex-1 py-3 rounded-2xl items-center border ${activeTab === 'manual' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
+                  >
+                    <Text className={`font-bold text-xs uppercase ${activeTab === 'manual' ? 'text-white' : 'text-[#94A3B8]'}`}>Selection Tools</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setActiveTab(activeTab === 'adjust' ? null : 'adjust')}
+                    className={`flex-1 py-3 rounded-2xl items-center border ${activeTab === 'adjust' ? 'bg-[#115E59] border-[#14B8A6]' : 'bg-white/5 border-white/10'}`}
+                  >
+                    <Text className={`font-bold text-xs uppercase ${activeTab === 'adjust' ? 'text-white' : 'text-[#94A3B8]'}`}>Image Adjustments</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </View>
+        )}
+      </SafeAreaView>
     );
   }
 

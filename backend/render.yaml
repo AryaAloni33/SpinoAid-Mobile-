@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: spine-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    rootContext: .
+    envVars:
+      - key: FEMORAL_HF_API
+        value: https://sam9198-femoral-head-detection.hf.space/predict
+      - key: ENDPLATES_HF_API
+        value: https://sam9198-vertebral-endplate-detection.hf.space/predict
+      - key: HF_TOKEN
+        value: "" # Put your Hugging Face access token here or in the Render dashboard
+      - key: PYTHON_VERSION
+        value: 3.10.0

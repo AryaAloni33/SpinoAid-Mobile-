@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
+    "name": "SPINOAID",
+    "slug": "SPINOAID",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/Logo.png",
@@ -21,7 +21,7 @@
         "foregroundImage": "./assets/Logo.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.mobile"
+      "package": "com.spinoaid.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"

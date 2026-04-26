@@ -365,17 +365,40 @@ export const uploadImage = async (file: File) => {
 };
 
 export const autoAnnotateApi = {
-  /** Call the backend which proxies the Hugging Face calls */
+  /** Call the specialized hosted endpoints */
   analyzeBackend: async (imageDataUrl: string): Promise<any> => {
-    // Note: In a production mobile environment, 'localhost' should be the machine's IP or a deployed URL
-    const response = await fetch("http://localhost:8000/api/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image_data: imageDataUrl }),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Backend analysis failed");
-    return data.results;
+    // Strip data URL prefix if present for the hosted backend
+    const base64Data = imageDataUrl.includes(',') ? imageDataUrl.split(',')[1] : imageDataUrl;
+
+    try {
+      // 1. Fetch Femoral Detections
+      const femRes = await fetch("https://spine-backend-xox7.onrender.com/api/femoral/detect-base64", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_data: base64Data }),
+      });
+      const femData = await femRes.json();
+
+      // 2. Fetch Endplate Detections
+      const epRes = await fetch("https://spine-backend-xox7.onrender.com/api/endplates/detect-base64", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image_data: base64Data }),
+      });
+      const epData = await epRes.json();
+
+      // Combine results based on backend route responses
+      return {
+        // Femoral route returns { success, detections: [...] }
+        femoral_heads: femData.detections || [],
+        // Endplates route returns { success, endplates: [...], ... }
+        endplates: epData.endplates || [],
+        image_info: epData // Contains image_width, image_height for scaling
+      };
+    } catch (err) {
+      console.error("API Call failed:", err);
+      throw err;
+    }
   }
 };
 

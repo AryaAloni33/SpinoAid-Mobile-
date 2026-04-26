@@ -28,13 +28,15 @@ async def detect_femoral_heads(file: UploadFile = File(...)):
         # Read file content
         image_data = await file.read()
         
-        # Get detector and run inference
-        detector = get_detector()
-        detections = detector.detect_femoral_heads(image_data)
+        # Use Hugging Face API instead of local detector
+        from utils.hf_client import call_hf_predict, FEMORAL_API, extract_femoral_heads
+        
+        hf_data = await call_hf_predict(FEMORAL_API, image_data)
+        detections = extract_femoral_heads(hf_data)
         
         return JSONResponse(content={
             "success": True,
-            "message": f"Detected {len(detections)} femoral heads",
+            "message": f"Detected {len(detections)} femoral heads via AI",
             "detections": detections,
             "image_info": {
                 "filename": file.filename,
@@ -67,13 +69,15 @@ async def detect_femoral_heads_base64(request: dict):
         # Decode base64
         image_data = base64.b64decode(request['image_data'])
         
-        # Get detector and run inference
-        detector = get_detector()
-        detections = detector.detect_femoral_heads(image_data)
+        # Use Hugging Face API instead of local detector
+        from utils.hf_client import call_hf_predict, FEMORAL_API, extract_femoral_heads
+        
+        hf_data = await call_hf_predict(FEMORAL_API, image_data)
+        detections = extract_femoral_heads(hf_data)
         
         return JSONResponse(content={
             "success": True,
-            "message": f"Detected {len(detections)} femoral heads",
+            "message": f"Detected {len(detections)} femoral heads via AI",
             "detections": detections
         })
         
